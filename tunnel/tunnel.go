@@ -70,6 +70,8 @@ var (
 	ruleUpdateCallback = utils.NewCallback[P.RuleProvider]()
 )
 
+var ErrUDPNotSupportedByProxy = errors.New("matched proxy does not support UDP")
+
 type tunnel struct{}
 
 var Tunnel = tunnel{}
@@ -683,7 +685,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 
 				if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
 					log.Debugln("%s UDP is not supported", adapter.Name())
-					continue
+					return nil, rule, fmt.Errorf("%w: %s", ErrUDPNotSupportedByProxy, adapter.Name())
 				}
 
 				return adapter, rule, nil
