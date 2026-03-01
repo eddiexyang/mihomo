@@ -325,7 +325,7 @@ jobs:
           body_path: release.md
 
   Docker:
-    if: ${{ !startsWith(github.event_name, 'pull_request') }}
+    if: ${{ false }}
     permissions: write-all
     needs: [build]
     runs-on: ubuntu-latest
