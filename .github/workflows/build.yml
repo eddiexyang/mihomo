@@ -29,8 +29,8 @@ jobs:
     strategy:
       matrix:
         jobs:
-          - { goos: linux, goarch: amd64, output: amd64 }
-          - { goos: linux, goarch: arm64, output: arm64 }
+          - { goos: linux, goarch: amd64, output: amd64, debian: amd64 }
+          - { goos: linux, goarch: arm64, output: arm64, debian: arm64 }
           - { goos: windows, goarch: amd64, output: amd64 }
           - { goos: windows, goarch: arm64, output: arm64 }
           - { goos: darwin, goarch: amd64, output: amd64 }
