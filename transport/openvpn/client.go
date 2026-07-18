@@ -29,6 +29,7 @@ type Client struct {
 	data    *DataChannel
 	push    *PushReply
 
+	runCtx context.Context
 	cancel context.CancelFunc
 
 	writeSem *semaphore.Weighted
@@ -44,10 +45,16 @@ func NewClient(config *ClientConfig, io PacketIO) (*Client, error) {
 	if io == nil {
 		return nil, errors.New("nil openvpn packet io")
 	}
-	var crypt *TLSCrypt
+	var crypt ControlCryptor
 	if len(config.TLSCryptKey) > 0 {
 		var err error
 		crypt, err = NewTLSCrypt(config.TLSCryptKey, true)
+		if err != nil {
+			return nil, err
+		}
+	} else if len(config.TLSAuthKey) > 0 {
+		var err error
+		crypt, err = NewTLSAuth(config.TLSAuthKey, config.KeyDirection)
 		if err != nil {
 			return nil, err
 		}
@@ -63,6 +70,7 @@ func NewClient(config *ClientConfig, io PacketIO) (*Client, error) {
 		config:   config,
 		mux:      mux,
 		control:  NewControlChannel(mux, crypt, local),
+		runCtx:   runCtx,
 		cancel:   cancel,
 		writeSem: semaphore.NewWeighted(1),
 	}
@@ -137,6 +145,8 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 	}
 	c.markSend()
 	c.markReceive()
+	_ = c.tlsConn.SetDeadline(time.Time{})
+	go c.watchControl()
 	return push, nil
 }
 
@@ -197,6 +207,14 @@ func (c *Client) ReadIPPacket(ctx context.Context) ([]byte, error) {
 		}
 		return plain, nil
 	}
+}
+
+// watchControl terminates the client when the established control channel
+// starts a new key epoch or otherwise stops.
+func (c *Client) watchControl() {
+	_ = c.control.waitForSoftReset(c.runCtx)
+	c.cancel()
+	_ = c.mux.Close()
 }
 
 func (c *Client) SinceSend() time.Duration {
