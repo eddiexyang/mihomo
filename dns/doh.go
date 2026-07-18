@@ -552,7 +552,7 @@ func (doh *dnsOverHTTPS) dialQuic(ctx context.Context, addr string, tlsCfg *tls.
 		IP:   net.ParseIP(ip),
 		Port: portInt,
 	}
-	packetConn, err := doh.dialer.ListenPacket(ctx, "udp", addr)
+	packetConn, err := doh.dialer.ListenPacketWithResolvedAddress(ctx, "udp", doh.url.Host, udpAddr.AddrPort())
 	if err != nil {
 		return nil, err
 	}

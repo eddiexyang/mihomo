@@ -330,7 +330,7 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn
 
 	p, err := strconv.Atoi(port)
 	udpAddr := net.UDPAddr{IP: net.ParseIP(ip), Port: p}
-	packetConn, err := doq.dialer.ListenPacket(ctx, "udp", addr)
+	packetConn, err := doq.dialer.ListenPacketWithResolvedAddress(ctx, "udp", doq.addr, udpAddr.AddrPort())
 	if err != nil {
 		return nil, err
 	}

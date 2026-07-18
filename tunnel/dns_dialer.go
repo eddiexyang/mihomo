@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 
 	N "github.com/metacubex/mihomo/common/net"
@@ -125,10 +126,24 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 
 		return N.NewBindPacketConn(packetConn, metadata.UDPAddr()), nil
 	}
-
 }
 
 func (d *DNSDialer) ListenPacket(ctx context.Context, network, addr string) (net.PacketConn, error) {
+	return d.listenPacket(ctx, network, addr, netip.AddrPort{})
+}
+
+// ListenPacketWithResolvedAddress opens a packet connection for addr while
+// pinning the actual destination to resolvedAddr. The logical host in addr is
+// retained for rule matching, logging, and connection tracking.
+func (d *DNSDialer) ListenPacketWithResolvedAddress(ctx context.Context, network, addr string, resolvedAddr netip.AddrPort) (net.PacketConn, error) {
+	if !resolvedAddr.IsValid() || resolvedAddr.Port() == 0 {
+		return nil, fmt.Errorf("invalid resolved address: %s", resolvedAddr)
+	}
+
+	return d.listenPacket(ctx, network, addr, resolvedAddr)
+}
+
+func (d *DNSDialer) listenPacket(ctx context.Context, network, addr string, resolvedAddr netip.AddrPort) (net.PacketConn, error) {
 	r := d.r
 	proxyAdapter := d.proxyAdapter
 	proxyName := d.proxyName
@@ -141,7 +156,10 @@ func (d *DNSDialer) ListenPacket(ctx context.Context, network, addr string) (net
 	if err != nil {
 		return nil, err
 	}
-	if !metadata.Resolved() {
+	if resolvedAddr.IsValid() {
+		metadata.DstIP = resolvedAddr.Addr().Unmap()
+		metadata.DstPort = resolvedAddr.Port()
+	} else if !metadata.Resolved() {
 		// udp must resolve host first
 		dstIP, err := resolver.ResolveIPWithResolver(ctx, metadata.Host, r)
 		if err != nil {
@@ -176,7 +194,14 @@ func (d *DNSDialer) ListenPacket(ctx context.Context, network, addr string) (net
 		return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter)
 	}
 
-	packetConn, err := proxyAdapter.ListenPacketContext(ctx, metadata)
+	// Keep the logical host on metadata for rules and tracking, but pass the
+	// pinned IP to the proxy so it cannot trigger another DNS resolution.
+	dialMetadata := metadata
+	if resolvedAddr.IsValid() && metadata.Host != "" {
+		dialMetadata = metadata.Clone()
+		dialMetadata.Host = ""
+	}
+	packetConn, err := proxyAdapter.ListenPacketContext(ctx, dialMetadata)
 	if err != nil {
 		logMetadataErr(metadata, rule, proxyAdapter, err)
 		return nil, err
