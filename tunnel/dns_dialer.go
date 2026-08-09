@@ -38,6 +38,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 		NetWork: C.TCP,
 		Type:    C.INNER,
 	}
+	routeState := captureMetadataRouteState(metadata)
 	err := metadata.SetRemoteAddress(addr) // tcp can resolve host by remote
 	if err != nil {
 		return nil, err
@@ -64,7 +65,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 				}
 				metadata.DstIP = dstIP
 			}
-			proxyAdapter, rule, err = resolveMetadata(metadata)
+			proxyAdapter, rule, err = resolveMetadataWithMode(metadata, routeState.mode)
 			if err != nil {
 				return nil, err
 			}
@@ -101,9 +102,14 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 			logMetadataErr(metadata, rule, proxyAdapter, err)
 			return nil, err
 		}
-		logMetadata(metadata, rule, conn)
 
-		conn = statistic.NewTCPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+		conn, err = joinModeTracker(routeState.revision, metadata, conn, func(conn C.Conn) C.Conn {
+			return statistic.NewTCPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+		})
+		if err != nil {
+			return nil, err
+		}
+		logMetadataWithMode(metadata, rule, conn, routeState.mode)
 
 		return conn, nil
 	} else {
@@ -120,9 +126,14 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 			logMetadataErr(metadata, rule, proxyAdapter, err)
 			return nil, err
 		}
-		logMetadata(metadata, rule, packetConn)
 
-		packetConn = statistic.NewUDPTracker(packetConn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+		packetConn, err = joinModeTracker(routeState.revision, metadata, packetConn, func(conn C.PacketConn) C.PacketConn {
+			return statistic.NewUDPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+		})
+		if err != nil {
+			return nil, err
+		}
+		logMetadataWithMode(metadata, rule, packetConn, routeState.mode)
 
 		return N.NewBindPacketConn(packetConn, metadata.UDPAddr()), nil
 	}
@@ -152,6 +163,7 @@ func (d *DNSDialer) listenPacket(ctx context.Context, network, addr string, reso
 		NetWork: C.UDP,
 		Type:    C.INNER,
 	}
+	routeState := captureMetadataRouteState(metadata)
 	err := metadata.SetRemoteAddress(addr)
 	if err != nil {
 		return nil, err
@@ -171,7 +183,7 @@ func (d *DNSDialer) listenPacket(ctx context.Context, network, addr string, reso
 	var rule C.Rule
 	if proxyAdapter == nil {
 		if proxyName == DnsRespectRules {
-			proxyAdapter, rule, err = resolveMetadata(metadata)
+			proxyAdapter, rule, err = resolveMetadataWithMode(metadata, routeState.mode)
 			if err != nil {
 				return nil, err
 			}
@@ -206,9 +218,14 @@ func (d *DNSDialer) listenPacket(ctx context.Context, network, addr string, reso
 		logMetadataErr(metadata, rule, proxyAdapter, err)
 		return nil, err
 	}
-	logMetadata(metadata, rule, packetConn)
 
-	packetConn = statistic.NewUDPTracker(packetConn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+	packetConn, err = joinModeTracker(routeState.revision, metadata, packetConn, func(conn C.PacketConn) C.PacketConn {
+		return statistic.NewUDPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, false)
+	})
+	if err != nil {
+		return nil, err
+	}
+	logMetadataWithMode(metadata, rule, packetConn, routeState.mode)
 
 	return packetConn, nil
 }

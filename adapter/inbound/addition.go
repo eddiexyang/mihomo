@@ -2,8 +2,19 @@ package inbound
 
 import (
 	"net"
+	"sync/atomic"
 
 	C "github.com/metacubex/mihomo/constant"
+)
+
+const (
+	DefaultMixedName = "DEFAULT-MIXED"
+	DefaultTunName   = "DEFAULT-TUN"
+)
+
+var (
+	defaultMixedGeneration atomic.Uint64
+	defaultTunGeneration   atomic.Uint64
 )
 
 type Addition func(metadata *C.Metadata)
@@ -18,6 +29,45 @@ func WithInName(name string) Addition {
 	return func(metadata *C.Metadata) {
 		metadata.InName = name
 	}
+}
+
+func AdvanceDefaultListenerGeneration(name string) uint64 {
+	switch name {
+	case DefaultMixedName:
+		return defaultMixedGeneration.Add(1)
+	case DefaultTunName:
+		return defaultTunGeneration.Add(1)
+	default:
+		return 0
+	}
+}
+
+func CurrentDefaultListenerGeneration(name string) (uint64, bool) {
+	switch name {
+	case DefaultMixedName:
+		return defaultMixedGeneration.Load(), true
+	case DefaultTunName:
+		return defaultTunGeneration.Load(), true
+	default:
+		return 0, false
+	}
+}
+
+func WithDefaultListenerGeneration(name string, revision uint64) Addition {
+	token := &C.InboundGeneration{Name: name, Revision: revision}
+	return func(metadata *C.Metadata) {
+		metadata.InName = name
+		metadata.InboundGeneration = token
+	}
+}
+
+func IsCurrentDefaultListenerGeneration(metadata *C.Metadata) bool {
+	if metadata == nil || metadata.InboundGeneration == nil {
+		return true
+	}
+	token := metadata.InboundGeneration
+	current, ok := CurrentDefaultListenerGeneration(token.Name)
+	return ok && current == token.Revision
 }
 
 func WithInUser(user string) Addition {

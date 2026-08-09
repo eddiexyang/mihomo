@@ -1,5 +1,10 @@
 package listener
 
+import (
+	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/tunnel/statistic"
+)
+
 func StopListener() {
 
 	if socksListener != nil {
@@ -37,20 +42,31 @@ func StopListener() {
 		tproxyUDPListener = nil
 	}
 
+	var mixedConnections []statistic.Tracker
+	mixedMux.Lock()
+	if mixedListener != nil || mixedUDPLister != nil {
+		_, mixedConnections = advanceDefaultListenerGeneration(inbound.DefaultMixedName)
+	}
 	if mixedListener != nil {
 		_ = mixedListener.Close()
 		mixedListener = nil
 	}
-
 	if mixedUDPLister != nil {
 		_ = mixedUDPLister.Close()
 		mixedUDPLister = nil
 	}
+	mixedMux.Unlock()
+	closeDefaultListenerConnections(mixedConnections)
 
+	var tunConnections []statistic.Tracker
+	tunMux.Lock()
 	if tunLister != nil {
+		_, tunConnections = advanceDefaultListenerGeneration(inbound.DefaultTunName)
 		_ = tunLister.Close()
 		tunLister = nil
 	}
+	tunMux.Unlock()
+	closeDefaultListenerConnections(tunConnections)
 
 	if shadowSocksListener != nil {
 		_ = shadowSocksListener.Close()

@@ -22,6 +22,7 @@ import (
 	"github.com/metacubex/mihomo/listener/tuic"
 	LT "github.com/metacubex/mihomo/listener/tunnel"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/samber/lo"
 )
@@ -440,6 +441,35 @@ func ReCreateTProxy(port int, tunnel C.Tunnel) {
 	log.Infoln("TProxy server listening at: %s", tproxyListener.Address())
 }
 
+func advanceDefaultListenerGeneration(name string) (uint64, []statistic.Tracker) {
+	revision := inbound.AdvanceDefaultListenerGeneration(name)
+	connections := make([]statistic.Tracker, 0)
+	statistic.DefaultManager.Range(func(connection statistic.Tracker) bool {
+		info := connection.Info()
+		if info != nil && info.Metadata != nil && info.Metadata.InName == name {
+			connections = append(connections, connection)
+		}
+		return true
+	})
+	return revision, connections
+}
+
+func closeDefaultListenerConnections(connections []statistic.Tracker) {
+	for _, connection := range connections {
+		if statistic.DefaultManager.Get(connection.ID()) == nil {
+			continue
+		}
+		if err := connection.Close(); err != nil {
+			log.Warnln("close stale default listener connection %s failed: %v", connection.ID(), err)
+		}
+	}
+}
+
+func invalidateDefaultMixedGeneration() {
+	_, staleConnections := advanceDefaultListenerGeneration(inbound.DefaultMixedName)
+	closeDefaultListenerConnections(staleConnections)
+}
+
 func ReCreateMixed(port int, tunnel C.Tunnel) {
 	mixedMux.Lock()
 	defer mixedMux.Unlock()
@@ -452,47 +482,79 @@ func ReCreateMixed(port int, tunnel C.Tunnel) {
 	}()
 
 	addr := genAddr(bindAddress, port, allowLan)
+	tcpMatches := mixedListener != nil && mixedListener.RawAddress() == addr
+	udpMatches := mixedUDPLister != nil && mixedUDPLister.RawAddress() == addr
 
-	shouldTCPIgnore := false
-	shouldUDPIgnore := false
+	if tcpMatches && udpMatches {
+		return
+	}
 
-	if mixedListener != nil {
-		if mixedListener.RawAddress() != addr {
-			mixedListener.Close()
-			mixedListener = nil
-		} else {
-			shouldTCPIgnore = true
+	portDisabled := portIsZero(addr)
+	if mixedListener == nil && mixedUDPLister == nil && portDisabled {
+		return
+	}
+
+	generation, _ := inbound.CurrentDefaultListenerGeneration(inbound.DefaultMixedName)
+	listenerChanged := generation == 0 ||
+		(mixedListener != nil && !tcpMatches) ||
+		(mixedUDPLister != nil && !udpMatches)
+	if listenerChanged {
+		var staleConnections []statistic.Tracker
+		generation, staleConnections = advanceDefaultListenerGeneration(inbound.DefaultMixedName)
+		defer closeDefaultListenerConnections(staleConnections)
+		tcpMatches = false
+		udpMatches = false
+	}
+
+	if mixedListener != nil && !tcpMatches {
+		_ = mixedListener.Close()
+		mixedListener = nil
+	}
+	if mixedUDPLister != nil && !udpMatches {
+		_ = mixedUDPLister.Close()
+		mixedUDPLister = nil
+	}
+
+	if portDisabled {
+		return
+	}
+
+	additions := defaultMixedAdditions(generation)
+	createdTCP := false
+	if mixedListener == nil {
+		mixedListener, err = mixed.New(addr, tunnel, additions...)
+		if err != nil {
+			return
 		}
+		createdTCP = true
 	}
-	if mixedUDPLister != nil {
-		if mixedUDPLister.RawAddress() != addr {
-			mixedUDPLister.Close()
-			mixedUDPLister = nil
-		} else {
-			shouldUDPIgnore = true
+	if mixedUDPLister == nil {
+		mixedUDPLister, err = socks.NewUDP(addr, tunnel, additions...)
+		if err != nil {
+			if createdTCP {
+				_ = mixedListener.Close()
+				mixedListener = nil
+				invalidateDefaultMixedGeneration()
+			}
+			return
 		}
-	}
-
-	if shouldTCPIgnore && shouldUDPIgnore {
-		return
-	}
-
-	if portIsZero(addr) {
-		return
-	}
-
-	mixedListener, err = mixed.New(addr, tunnel)
-	if err != nil {
-		return
-	}
-
-	mixedUDPLister, err = socks.NewUDP(addr, tunnel)
-	if err != nil {
-		mixedListener.Close()
-		return
 	}
 
 	log.Infoln("Mixed(http+socks) proxy listening at: %s", mixedListener.Address())
+}
+
+func defaultMixedAdditions(generation uint64) []inbound.Addition {
+	return []inbound.Addition{
+		inbound.WithDefaultListenerGeneration(inbound.DefaultMixedName, generation),
+		inbound.WithSpecialRules(""),
+	}
+}
+
+func defaultTunAdditions(generation uint64) []inbound.Addition {
+	return []inbound.Addition{
+		inbound.WithDefaultListenerGeneration(inbound.DefaultTunName, generation),
+		inbound.WithSpecialRules(""),
+	}
 }
 
 func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
@@ -516,6 +578,12 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
 		tunLister.OnReload()
 		return
 	}
+	if tunLister == nil && !tunConf.Enable {
+		return
+	}
+
+	generation, staleConnections := advanceDefaultListenerGeneration(inbound.DefaultTunName)
+	defer closeDefaultListenerConnections(staleConnections)
 
 	closeTunListener()
 
@@ -523,7 +591,7 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
 		return
 	}
 
-	lister, err := sing_tun.New(tunConf, tunnel)
+	lister, err := sing_tun.New(tunConf, tunnel, defaultTunAdditions(generation)...)
 	if err != nil {
 		return
 	}
@@ -723,5 +791,12 @@ func closeTunListener() {
 }
 
 func Cleanup() {
-	closeTunListener()
+	var staleConnections []statistic.Tracker
+	tunMux.Lock()
+	if tunLister != nil {
+		_, staleConnections = advanceDefaultListenerGeneration(inbound.DefaultTunName)
+		closeTunListener()
+	}
+	tunMux.Unlock()
+	closeDefaultListenerConnections(staleConnections)
 }

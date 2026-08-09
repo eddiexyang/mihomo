@@ -57,7 +57,7 @@ var (
 	udpInOnce sync.Once
 
 	// Outbound Rule
-	mode = Rule
+	modeState = atomic.NewTypedValue(tunnelModeState{mode: Rule})
 
 	// default timeout for UDP session
 	udpTimeout = 60 * time.Second
@@ -252,12 +252,35 @@ func UpdateSniffer(dispatcher *sniffer.Dispatcher) {
 
 // Mode return current mode
 func Mode() TunnelMode {
-	return mode
+	return captureModeState().mode
 }
 
-// SetMode change the mode of tunnel
-func SetMode(m TunnelMode) {
-	mode = m
+// SetMode changes the routing mode and closes trackers created by an older
+// routing revision. It returns whether the mode changed.
+func SetMode(m TunnelMode) bool {
+	modeSwitchMu.Lock()
+	defer modeSwitchMu.Unlock()
+
+	current := captureModeState()
+	if current.mode == m {
+		return false
+	}
+	next := tunnelModeState{
+		mode:     m,
+		revision: current.revision + 1,
+	}
+	modeState.Store(next)
+	staleConnections := connectionsBeforeModeRevision(next.revision)
+
+	for _, connection := range staleConnections {
+		if statistic.DefaultManager.Get(connection.ID()) == nil {
+			continue
+		}
+		if err := connection.Close(); err != nil {
+			log.Warnln("close stale mode connection %s failed: %v", connection.ID(), err)
+		}
+	}
+	return true
 }
 
 func FindProcessMode() process.FindProcessMode {
@@ -318,6 +341,10 @@ func preHandleMetadata(metadata *C.Metadata) error {
 }
 
 func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err error) {
+	return resolveMetadataWithMode(metadata, Mode())
+}
+
+func resolveMetadataWithMode(metadata *C.Metadata, routeMode TunnelMode) (proxy C.Proxy, rule C.Rule, err error) {
 	if metadata.SpecialProxy != "" {
 		var exist bool
 		proxy, exist = proxies[metadata.SpecialProxy]
@@ -401,7 +428,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 		helper.FindProcess = nil
 	}
 
-	switch mode {
+	switch routeMode {
 	case Direct:
 		proxy = proxies["DIRECT"]
 	case Global:
@@ -460,7 +487,8 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 			_ = preHandleMetadata(metadata) // error was pre-checked
 
-			proxy, rule, err := resolveMetadata(metadata)
+			routeState := captureMetadataRouteState(metadata)
+			proxy, rule, err := resolveMetadataWithMode(metadata, routeState.mode)
 			if err != nil {
 				log.Warnln("[UDP] Parse metadata failed: %s", err.Error())
 				return nil, nil, err
@@ -477,9 +505,14 @@ func handleUDPConn(packet C.PacketAdapter) {
 			if err != nil {
 				return nil, nil, err
 			}
-			logMetadata(metadata, rule, rawPc)
 
-			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true)
+			pc, err := joinModeTracker(routeState.revision, metadata, rawPc, func(conn C.PacketConn) C.PacketConn {
+				return statistic.NewUDPTracker(conn, statistic.DefaultManager, metadata, rule, 0, 0, true)
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			logMetadataWithMode(metadata, rule, pc, routeState.mode)
 
 			sender.AddMapping(originMetadata, dialMetadata)
 			oAddrPort := dialMetadata.AddrPort()
@@ -554,7 +587,8 @@ func handleTCPConn(connCtx C.ConnContext) {
 		}()
 	}
 
-	proxy, rule, err := resolveMetadata(metadata)
+	routeState := captureMetadataRouteState(metadata)
+	proxy, rule, err := resolveMetadataWithMode(metadata, routeState.mode)
 	if err != nil {
 		log.Warnln("[Metadata] parse failed: %s", err.Error())
 		return
@@ -578,6 +612,10 @@ func handleTCPConn(connCtx C.ConnContext) {
 	defer cancel()
 	remoteConn, err := retry(ctx, func(ctx context.Context) (remoteConn C.Conn, err error) {
 		remoteConn, err = proxy.DialContext(ctx, dialMetadata)
+		if err != nil {
+			return
+		}
+		remoteConn, err = validateTCPRemoteConnRouteState(routeState.revision, metadata, remoteConn)
 		if err != nil {
 			return
 		}
@@ -613,9 +651,14 @@ func handleTCPConn(connCtx C.ConnContext) {
 	if err != nil {
 		return
 	}
-	logMetadata(metadata, rule, remoteConn)
 
-	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
+	remoteConn, err = joinModeTracker(routeState.revision, metadata, remoteConn, func(conn C.Conn) C.Conn {
+		return statistic.NewTCPTracker(conn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
+	})
+	if err != nil {
+		return
+	}
+	logMetadataWithMode(metadata, rule, remoteConn, routeState.mode)
 	defer func(remoteConn C.Conn) {
 		_ = remoteConn.Close()
 	}(remoteConn)
@@ -636,6 +679,10 @@ func logMetadataErr(metadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err
 }
 
 func logMetadata(metadata *C.Metadata, rule C.Rule, remoteConn C.Connection) {
+	logMetadataWithMode(metadata, rule, remoteConn, Mode())
+}
+
+func logMetadataWithMode(metadata *C.Metadata, rule C.Rule, remoteConn C.Connection, routeMode TunnelMode) {
 	switch {
 	case metadata.SpecialProxy != "":
 		log.Infoln("[%s] %s --> %s using %s", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress(), remoteConn.Chains().String())
@@ -645,9 +692,9 @@ func logMetadata(metadata *C.Metadata, rule C.Rule, remoteConn C.Connection) {
 		} else {
 			log.Infoln("[%s] %s --> %s match %s using %s", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress(), rule.RuleType().String(), remoteConn.Chains().String())
 		}
-	case mode == Global:
+	case routeMode == Global:
 		log.Infoln("[%s] %s --> %s using GLOBAL", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress())
-	case mode == Direct:
+	case routeMode == Direct:
 		log.Infoln("[%s] %s --> %s using DIRECT", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress())
 	default:
 		log.Infoln("[%s] %s --> %s doesn't match any rule using %s", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress(), remoteConn.Chains().String())
@@ -724,6 +771,12 @@ func getRules(metadata *C.Metadata) []C.Rule {
 }
 
 func shouldStopRetry(err error) bool {
+	if errors.Is(err, errModeChanged) {
+		return true
+	}
+	if errors.Is(err, errListenerGenerationChanged) {
+		return true
+	}
 	if errors.Is(err, resolver.ErrIPNotFound) {
 		return true
 	}

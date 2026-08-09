@@ -387,14 +387,18 @@ func updateUpdater(cfg *config.Config) {
 //go:linkname temporaryUpdateGeneral github.com/metacubex/mihomo/config.temporaryUpdateGeneral
 func temporaryUpdateGeneral(general *config.General) func() {
 	oldGeneral := GetGeneral()
-	updateGeneral(general, false)
+	updateGeneralWithoutMode(general, false)
 	return func() {
-		updateGeneral(oldGeneral, false)
+		updateGeneralWithoutMode(oldGeneral, false)
 	}
 }
 
 func updateGeneral(general *config.General, logging bool) {
 	tunnel.SetMode(general.Mode)
+	updateGeneralWithoutMode(general, logging)
+}
+
+func updateGeneralWithoutMode(general *config.General, logging bool) {
 	tunnel.SetFindProcessMode(general.FindProcessMode)
 	resolver.DisableIPv6 = !general.IPv6
 

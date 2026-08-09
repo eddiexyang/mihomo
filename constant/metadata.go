@@ -186,32 +186,40 @@ func (t Type) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.String())
 }
 
+type InboundGeneration struct {
+	Name     string
+	Revision uint64
+}
+
 // Metadata is used to store connection address
 type Metadata struct {
-	NetWork      NetWork    `json:"network"`
-	Type         Type       `json:"type"`
-	SrcIP        netip.Addr `json:"sourceIP"`
-	DstIP        netip.Addr `json:"destinationIP"`
-	SrcGeoIP     []string   `json:"sourceGeoIP"`      // can be nil if never queried, empty slice if got no result
-	DstGeoIP     []string   `json:"destinationGeoIP"` // can be nil if never queried, empty slice if got no result
-	SrcIPASN     string     `json:"sourceIPASN"`
-	DstIPASN     string     `json:"destinationIPASN"`
-	SrcPort      uint16     `json:"sourcePort,string"`      // `,string` is used to compatible with old version json output
-	DstPort      uint16     `json:"destinationPort,string"` // `,string` is used to compatible with old version json output
-	InIP         netip.Addr `json:"inboundIP"`
-	InPort       uint16     `json:"inboundPort,string"` // `,string` is used to compatible with old version json output
-	InName       string     `json:"inboundName"`
-	InUser       string     `json:"inboundUser"`
-	RematchName  string     `json:"rematchName"`
-	Host         string     `json:"host"`
-	DNSMode      DNSMode    `json:"dnsMode"`
-	Uid          uint32     `json:"uid"`
-	Process      string     `json:"process"`
-	ProcessPath  string     `json:"processPath"`
-	SpecialProxy string     `json:"specialProxy"`
-	SpecialRules string     `json:"specialRules"`
-	RemoteDst    string     `json:"remoteDestination"`
-	DSCP         uint8      `json:"dscp"`
+	NetWork           NetWork            `json:"network"`
+	Type              Type               `json:"type"`
+	SrcIP             netip.Addr         `json:"sourceIP"`
+	DstIP             netip.Addr         `json:"destinationIP"`
+	SrcGeoIP          []string           `json:"sourceGeoIP"`      // can be nil if never queried, empty slice if got no result
+	DstGeoIP          []string           `json:"destinationGeoIP"` // can be nil if never queried, empty slice if got no result
+	SrcIPASN          string             `json:"sourceIPASN"`
+	DstIPASN          string             `json:"destinationIPASN"`
+	SrcPort           uint16             `json:"sourcePort,string"`      // `,string` is used to compatible with old version json output
+	DstPort           uint16             `json:"destinationPort,string"` // `,string` is used to compatible with old version json output
+	InIP              netip.Addr         `json:"inboundIP"`
+	InPort            uint16             `json:"inboundPort,string"` // `,string` is used to compatible with old version json output
+	InName            string             `json:"inboundName"`
+	InUser            string             `json:"inboundUser"`
+	RematchName       string             `json:"rematchName"`
+	Host              string             `json:"host"`
+	DNSMode           DNSMode            `json:"dnsMode"`
+	Uid               uint32             `json:"uid"`
+	Process           string             `json:"process"`
+	ProcessPath       string             `json:"processPath"`
+	SpecialProxy      string             `json:"specialProxy"`
+	SpecialRules      string             `json:"specialRules"`
+	RemoteDst         string             `json:"remoteDestination"`
+	DSCP              uint8              `json:"dscp"`
+	RouteRevision     uint64             `json:"-"`
+	RouteRevisionSet  bool               `json:"-"`
+	InboundGeneration *InboundGeneration `json:"-"`
 
 	RawSrcAddr net.Addr `json:"-"`
 	RawDstAddr net.Addr `json:"-"`
