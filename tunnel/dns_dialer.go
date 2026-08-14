@@ -118,7 +118,7 @@ func (d *DNSDialer) DialContext(ctx context.Context, network, addr string) (net.
 		}
 
 		if !proxyAdapter.SupportUDP() {
-			return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter)
+			return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter.Name())
 		}
 
 		packetConn, err := proxyAdapter.ListenPacketContext(ctx, metadata)
@@ -203,7 +203,7 @@ func (d *DNSDialer) listenPacket(ctx context.Context, network, addr string, reso
 	}
 
 	if !proxyAdapter.SupportUDP() {
-		return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter)
+		return nil, fmt.Errorf("proxy adapter [%s] UDP is not supported", proxyAdapter.Name())
 	}
 
 	// Keep the logical host on metadata for rules and tracking, but pass the
