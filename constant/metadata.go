@@ -262,7 +262,7 @@ func (m *Metadata) SourceValid() bool {
 
 func (m *Metadata) AddrType() AddrType {
 	switch true {
-	case m.Host != "" || !m.DstIP.IsValid():
+	case !m.DstIP.IsValid():
 		return AtypDomainName
 	case m.DstIP.Is4():
 		return AtypIPv4
