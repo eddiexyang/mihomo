@@ -150,6 +150,13 @@ type kcpTunOption struct {
 	KeepAlive    int    `obfs:"keepalive,omitempty"`
 }
 
+func shadowSocksDestination(metadata *C.Metadata) M.Socksaddr {
+	if metadata.DstIP.IsValid() {
+		return M.SocksaddrFrom(metadata.DstIP, metadata.DstPort)
+	}
+	return M.ParseSocksaddrHostPort(metadata.String(), metadata.DstPort)
+}
+
 // StreamConnContext implements C.ProxyAdapter
 func (ss *ShadowSocks) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.Metadata) (_ net.Conn, err error) {
 	useEarly := false
@@ -204,10 +211,11 @@ func (ss *ShadowSocks) StreamConnContext(ctx context.Context, c net.Conn, metada
 			return ss.method.DialConn(c, uotDestination)
 		}
 	}
+	destination := shadowSocksDestination(metadata)
 	if useEarly {
-		return ss.method.DialEarlyConn(c, M.ParseSocksaddrHostPort(metadata.String(), metadata.DstPort)), nil
+		return ss.method.DialEarlyConn(c, destination), nil
 	} else {
-		return ss.method.DialConn(c, M.ParseSocksaddrHostPort(metadata.String(), metadata.DstPort))
+		return ss.method.DialConn(c, destination)
 	}
 }
 
